@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mapillary Journal</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>
+    :root { color-scheme: light; --green: #05a55c; --dark: #153b32; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font: 14px system-ui, sans-serif; color: var(--dark); }
+    #map { position: fixed; inset: 0; background: #e9f0ed; }
+    .panel { background: rgba(255,255,255,.96); border: 1px solid #dce7e1; border-radius: 5px; box-shadow: 0 2px 10px #0002; }
+    header { position: fixed; z-index: 1000; top: 12px; left: 60px; padding: 10px 14px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; max-width: calc(100vw - 72px); }
+    h1 { font-size: 17px; margin: 0; color: var(--green); }
+    label { display: inline-flex; align-items: center; gap: 5px; }
+    select, input, button { font: inherit; accent-color: var(--green); }
+    select, input[type=date], button { border: 1px solid #cddcd4; border-radius: 3px; padding: 5px; background: white; color: var(--dark); }
+    button { cursor: pointer; }
+    #timeline { position: fixed; z-index: 1000; bottom: 28px; left: 12px; right: 12px; padding: 10px 16px; }
+    .dates { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+    .sliders { display: flex; align-items: center; gap: 18px; margin-top: 6px; }
+    .sliders label { flex: 1; }
+    input[type=range] { width: 100%; }
+    #status { margin-left: auto; }
+    #notice { position: fixed; z-index: 1000; top: 90px; left: 60px; padding: 12px; max-width: 500px; }
+    .leaflet-popup-content a { color: var(--green); }
+  </style>
+</head>
+<body>
+  <div id="map" aria-label="Map of Mapillary sequences"></div>
+  <header class="panel">
+    <h1>Mapillary Journal <span id="username"></span></h1>
+    <label><input id="normal" type="checkbox" checked> Normal</label>
+    <label><input id="pano" type="checkbox" checked> 360°</label>
+    <label>Capture device <select id="device"><option value="">All devices</option></select></label>
+    <button id="fit" type="button">Fit visible</button>
+    <button id="reset" type="button">Reset filters</button>
+  </header>
+  <div id="notice" class="panel" role="alert" hidden></div>
+  <footer id="timeline" class="panel">
+    <div class="dates">
+      <strong>Capture dates (UTC)</strong>
+      <label>From <input id="from" type="date"></label>
+      <label>To <input id="to" type="date"></label>
+      <span id="status" role="status" aria-live="polite"></span>
+    </div>
+    <div class="sliders">
+      <label>Start <input id="start" type="range" aria-label="Start capture date"></label>
+      <label>End <input id="end" type="range" aria-label="End capture date"></label>
+    </div>
+  </footer>
+  <script id="journal-data" type="application/json">__JOURNAL_DATA__</script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>
+    "use strict";
+    const journal = JSON.parse(document.getElementById("journal-data").textContent);
+    const $ = id => document.getElementById(id);
+    $("username").textContent = "· " + journal.user.username;
+    const notice = message => { $("notice").textContent = message; $("notice").hidden = false; };
+    if (typeof L === "undefined") {
+      notice("Map library could not load. Internet access is required for Leaflet and the basemap.");
+    } else {
+      const map = L.map("map").setView([20, 0], 2);
+      const tiles = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+        maxZoom: 19
+      }).addTo(map);
+      let warned = false;
+      tiles.on("tileerror", () => {
+        if (!warned) { warned = true; notice("Basemap unavailable. Saved sequences and filters still work."); }
+      });
+      const layer = L.featureGroup().addTo(map);
+      const day = 86400000;
+      let minDay = Infinity, maxDay = -Infinity;
+      const devices = new Set();
+      for (const sequence of journal.sequences) {
+        for (const image of sequence.properties.images) {
+          const date = Math.floor(image.captured_at / day);
+          minDay = Math.min(minDay, date);
+          maxDay = Math.max(maxDay, date);
+          devices.add(image.device);
+        }
+      }
+      for (const device of [...devices].sort()) {
+        const option = document.createElement("option");
+        option.value = device; option.textContent = device;
+        $("device").append(option);
+      }
+      const empty = !Number.isFinite(minDay);
+      if (empty) {
+        minDay = maxDay = Math.floor(Date.now() / day);
+        notice("No sequences saved yet. Run manager.py update, then reopen this map.");
+      }
+      const dateString = value => new Date(Number(value) * day).toISOString().slice(0, 10);
+      for (const id of ["start", "end"]) {
+        $(id).min = minDay; $(id).max = maxDay; $(id).step = 1; $(id).disabled = empty;
+      }
+      for (const id of ["from", "to"]) {
+        $(id).min = dateString(minDay); $(id).max = dateString(maxDay); $(id).disabled = empty;
+      }
+      function popup(sequence, images) {
+        const div = document.createElement("div");
+        const heading = document.createElement("strong");
+        heading.textContent = "Sequence " + sequence.id;
+        div.append(heading, document.createElement("br"));
+        const text = document.createElement("p");
+        text.textContent = images.length + " images · " +
+          [...new Set(images.map(image => image.device))].join(", ") + " · " +
+          [...new Set(images.map(image => image.image_type))].join(", ") +
+          " · " + dateString(Math.floor(images[0].captured_at / day));
+        div.append(text);
+        const link = document.createElement("a");
+        link.textContent = "View images on Mapillary ↗";
+        link.href = "https://www.mapillary.com/app/?pKey=" + encodeURIComponent(images[0].id) + "&focus=photo";
+        link.target = "_blank"; link.rel = "noopener noreferrer";
+        div.append(link);
+        return div;
+      }
+      function redraw() {
+        $("from").value = dateString($("start").value);
+        $("to").value = dateString($("end").value);
+        const from = Number($("start").value) * day;
+        const to = (Number($("end").value) + 1) * day;
+        layer.clearLayers();
+        let sequenceCount = 0, imageCount = 0;
+        for (const sequence of journal.sequences) {
+          // Split at excluded images rather than joining unrelated visible segments.
+          const runs = []; let run = []; let visible = [];
+          for (const image of sequence.properties.images) {
+            const matches = image.captured_at >= from && image.captured_at < to &&
+              (image.image_type === "360" ? $("pano").checked : $("normal").checked) &&
+              (!$("device").value || image.device === $("device").value);
+            if (matches) { run.push(image); visible.push(image); }
+            else if (run.length) { runs.push(run); run = []; }
+          }
+          if (run.length) runs.push(run);
+          if (!visible.length) continue;
+          sequenceCount++; imageCount += visible.length;
+          for (const images of runs) {
+            const coordinates = images.map(image => [image.coordinates[1], image.coordinates[0]]);
+            const color = images[0].image_type === "360" ? "#05a55c" : "#247e99";
+            const shape = images.length === 1 ?
+              L.circleMarker(coordinates[0], {radius: 5, color, fillOpacity: .8}) :
+              L.polyline(coordinates, {color, weight: 4, opacity: .85});
+            shape.bindPopup(popup(sequence, images)).addTo(layer);
+          }
+        }
+        $("status").textContent = sequenceCount + " sequences · " + imageCount + " images";
+      }
+      function fit() {
+        if (layer.getLayers().length) map.fitBounds(layer.getBounds(), {padding: [90, 140], maxZoom: 17});
+      }
+      function reset() {
+        $("start").value = minDay; $("end").value = maxDay;
+        $("normal").checked = $("pano").checked = true; $("device").value = "";
+        redraw(); fit();
+      }
+      for (const id of ["normal", "pano", "device"]) $(id).addEventListener("change", redraw);
+      for (const id of ["start", "end"]) $(id).addEventListener("input", () => {
+        if (Number($("start").value) > Number($("end").value)) {
+          $(id === "start" ? "end" : "start").value = $(id).value;
+        }
+        redraw();
+      });
+      for (const [dateId, sliderId] of [["from", "start"], ["to", "end"]]) {
+        $(dateId).addEventListener("change", () => {
+          if (!$(dateId).value || !$(dateId).validity.valid) { redraw(); return; }
+          $(sliderId).value = Math.floor(Date.parse($(dateId).value + "T00:00:00Z") / day);
+          if (Number($("start").value) > Number($("end").value)) {
+            $(sliderId === "start" ? "end" : "start").value = $(sliderId).value;
+          }
+          redraw();
+        });
+      }
+      $("fit").addEventListener("click", fit);
+      $("reset").addEventListener("click", reset);
+      reset();
+    }
+  </script>
+</body>
+</html>
