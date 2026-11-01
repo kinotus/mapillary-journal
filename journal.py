@@ -7,6 +7,7 @@ import os
 import re
 import tempfile
 import time
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -195,7 +196,33 @@ def load_sequences(data_dir):
     return [read_json(path)["features"][0] for path in sorted(directory.glob("*.geojson"))]
 
 
+@contextmanager
+def sync_lock(data_dir):
+    directory = Path(data_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / ".sync.lock"
+    try:
+        handle = path.open("x", encoding="utf-8")
+    except FileExistsError:
+        raise JournalError(
+            "Another sync holds .sync.lock. If it was interrupted, remove the lock "
+            "only after confirming no sync is running."
+        ) from None
+    try:
+        with handle:
+            handle.write(str(os.getpid()) + "\n")
+            handle.flush()
+            yield
+    finally:
+        path.unlink()
+
+
 def sync_sequences(data_dir, api=None):
+    with sync_lock(data_dir):
+        return _sync_sequences(data_dir, api)
+
+
+def _sync_sequences(data_dir, api=None):
     user = config(data_dir)
     api = api or MapillaryAPI()
     existing = load_sequences(data_dir)

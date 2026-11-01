@@ -64,6 +64,10 @@ captured in the past. Image IDs are deduplicated and ordered by capture time.
 Completed discovery is required before writing updates; interrupted runs can be
 retried. This is an append-only journal: API deletions and edits to already saved
 images are not mirrored. A fresh data directory performs a full rebuild.
+An exclusive `.sync.lock` prevents overlapping syncs from overwriting additions.
+The lock is removed on normal completion or errors. After forcibly terminating a
+sync, remove the lock manually **only after confirming no sync is still running**;
+its contents record the owning process ID.
 
 Coverage is limited to images the API exposes for the configured user. Images
 still processing or lacking required geometry/time/type metadata cause sync to

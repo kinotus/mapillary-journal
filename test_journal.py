@@ -106,6 +106,29 @@ class JournalTests(unittest.TestCase):
             sync_sequences(self.data_dir, FailingAPI([]))
         self.assertFalse((self.data_dir / "sequences").exists())
         self.assertFalse((self.data_dir / "sync.json").exists())
+        self.assertFalse((self.data_dir / ".sync.lock").exists())
+        self.assertEqual(sync_sequences(self.data_dir, FakeAPI([image()]))["new_images"], 1)
+
+    def test_overlapping_sync_is_rejected_without_losing_images(self):
+        owner = self
+
+        class OverlappingAPI(FakeAPI):
+            def pages(self, path, **params):
+                with owner.assertRaises(JournalError):
+                    sync_sequences(owner.data_dir, FakeAPI([image("2")]))
+                yield from super().pages(path, **params)
+
+        self.assertEqual(sync_sequences(self.data_dir, OverlappingAPI([image()]))["new_images"], 1)
+        self.assertFalse((self.data_dir / ".sync.lock").exists())
+        feature = read_json(self.data_dir / "sequences" / "seq_a.geojson")["features"][0]
+        self.assertEqual([item["id"] for item in feature["properties"]["images"]], ["1"])
+
+    def test_existing_lock_is_not_removed_by_a_rejected_sync(self):
+        path = self.data_dir / ".sync.lock"
+        path.write_text("another process\n", encoding="utf-8")
+        with self.assertRaises(JournalError):
+            sync_sequences(self.data_dir, FakeAPI([image()]))
+        self.assertEqual(path.read_text(encoding="utf-8"), "another process\n")
 
     def test_creator_mismatch_does_not_write(self):
         wrong = image()
